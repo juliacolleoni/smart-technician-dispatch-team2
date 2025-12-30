@@ -346,12 +346,14 @@ class DataLoader:
         self.service_history = pd.read_excel(f"{self.data_dir}/03_customer_service_history.xlsx")
         self.workorders = pd.read_excel(f"{self.data_dir}/04_workorders_week_original.xlsx")
         self.calendar = pd.read_excel(f"{self.data_dir}/05_technician_calendar_original.xlsx")
-        
+        self.locations = pd.read_excel(f"{self.data_dir}/06_locations_nodes.xlsx")
+
         print(f"✓ Loaded {len(self.technicians)} technicians")
         print(f"✓ Loaded {len(self.customers)} customers")
         print(f"✓ Loaded {len(self.service_history)} service history records")
         print(f"✓ Loaded {len(self.workorders)} work orders")
         print(f"✓ Loaded {len(self.calendar)} calendar entries")
+        print(f"✓ Loaded {len(self.locations)} location nodes")
         
         return self
 
