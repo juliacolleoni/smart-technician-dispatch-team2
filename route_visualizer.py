@@ -27,7 +27,6 @@ class RouteVisualizer:
         print("Loading data for visualization...")
         
         self.work_orders = pd.read_excel(f"{self.data_dir}/04_workorders_week_original.xlsx")
-        self.locations = pd.read_excel(f"{self.data_dir}/06_locations_nodes.xlsx")
         self.technicians = pd.read_excel(f"{self.data_dir}/01_technician_profiles.xlsx")
         
         try:

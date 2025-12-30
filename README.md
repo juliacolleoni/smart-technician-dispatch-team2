@@ -242,9 +242,8 @@ route_visualizer.py (10 KB, 380 lines)
 - `01_technician_profiles.xlsx` - 10 technicians, skills, locations
 - `02_availability_schedules.xlsx` - Calendar blocks (available/unavailable)
 - `03_customer_history.xlsx` - Previous service records
-- `04_workorders_week_original.xlsx` - 198 work orders to schedule
+- `04_workorders_week_original.xlsx` - 198 work orders to schedule (includes geographic coordinates)
 - `05_distances.xlsx` - Pre-computed distance matrix (optional)
-- `06_locations_nodes.xlsx` - Geographic coordinates
 
 ### Output Files (Generated)
 - `final_schedule.csv` - Optimized schedule (198 rows)

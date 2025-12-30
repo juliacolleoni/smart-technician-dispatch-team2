@@ -333,14 +333,12 @@ class DataLoader:
         self.service_history = pd.read_excel(f"{self.data_dir}/03_customer_service_history.xlsx")
         self.workorders = pd.read_excel(f"{self.data_dir}/04_workorders_week_original.xlsx")
         self.calendar = pd.read_excel(f"{self.data_dir}/05_technician_calendar_original.xlsx")
-        self.locations = pd.read_excel(f"{self.data_dir}/06_locations_nodes.xlsx")
         
         print(f"✓ Loaded {len(self.technicians)} technicians")
         print(f"✓ Loaded {len(self.customers)} customers")
         print(f"✓ Loaded {len(self.service_history)} service history records")
         print(f"✓ Loaded {len(self.workorders)} work orders")
         print(f"✓ Loaded {len(self.calendar)} calendar entries")
-        print(f"✓ Loaded {len(self.locations)} location nodes")
         
         return self
 
@@ -349,33 +347,34 @@ class DataLoader:
 # ============================================================================
 
 class DistanceCalculator:
-    """Calculate and cache distances between locations."""
+    """Calculate and cache distances between work order locations."""
     
-    def __init__(self, locations_df: pd.DataFrame):
-        self.locations = locations_df
+    def __init__(self, workorders_df: pd.DataFrame):
+        """Initialize with workorders data containing job_lat and job_lon."""
+        self.workorders = workorders_df
         self.distance_cache = {}
         self._build_distance_matrix()
     
     def _build_distance_matrix(self):
-        """Pre-calculate all pairwise distances."""
+        """Pre-calculate all pairwise distances between work order locations."""
         print("\nBuilding distance matrix...")
         
-        for i, loc1 in self.locations.iterrows():
-            for j, loc2 in self.locations.iterrows():
+        for i, wo1 in self.workorders.iterrows():
+            for j, wo2 in self.workorders.iterrows():
                 if i != j:
-                    key = (loc1['node_id'], loc2['node_id'])
+                    key = (wo1['workorder_id'], wo2['workorder_id'])
                     if key not in self.distance_cache:
                         dist = haversine_distance(
-                            loc1['lat'], loc1['lon'],
-                            loc2['lat'], loc2['lon']
+                            wo1['job_lat'], wo1['job_lon'],
+                            wo2['job_lat'], wo2['job_lon']
                         )
                         self.distance_cache[key] = dist
-                        self.distance_cache[(loc2['node_id'], loc1['node_id'])] = dist
+                        self.distance_cache[(wo2['workorder_id'], wo1['workorder_id'])] = dist
         
         print(f"✓ Calculated {len(self.distance_cache)} distances")
     
     def get_distance(self, loc1_id: str, loc2_id: str) -> float:
-        """Get distance between two locations."""
+        """Get distance between two work order locations."""
         return self.distance_cache.get((loc1_id, loc2_id), 0.0)
 
 # ============================================================================
@@ -543,12 +542,12 @@ class TechnicianDispatchOptimizer:
     def __init__(self, data_loader: DataLoader):
         self.data = data_loader
         self.skill_extractor = SkillExtractor()
-        self.distance_calc = DistanceCalculator(data_loader.locations)
+        self.distance_calc = DistanceCalculator(data_loader.workorders)
         self.availability_mgr = AvailabilityManager(
             data_loader.technicians, 
             data_loader.calendar
         )
-        self.weight_manager = DynamicWeightManager()  # Add this line
+        self.weight_manager = DynamicWeightManager()
         self.assignments = []
         self.jobs_per_tech_per_day = {}  # Track: {tech_id: {date: job_count}}
    
