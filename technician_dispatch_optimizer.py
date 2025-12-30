@@ -18,6 +18,9 @@ import math
 import warnings
 warnings.filterwarnings('ignore')
 
+# Import metrics module (will be imported at the end to avoid circular import)
+# from metrics import QualityMetrics
+
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -1328,6 +1331,13 @@ def main():
     # Generate output
     output_file = "output/final_schedule.csv"
     optimizer.generate_output(output_file)
+    
+    # Calculate and display quality metrics
+    from metrics import QualityMetrics
+    metrics = QualityMetrics(optimizer)
+    
+    # Print comparison report (original vs optimized)
+    metrics.print_comparison_report()
     
     print("\n" + "="*80)
     print("OPTIMIZATION COMPLETE!")

@@ -344,25 +344,21 @@ class RouteVisualizer:
         print("CREATING INTERACTIVE FILTERED ROUTE VISUALIZATIONS")
         print("="*80)
         
-        # Create a "before" schedule with random assignments for comparison
-        print("\nGenerating baseline (unoptimized) schedule for comparison...")
+        # Use original assignments from dataset 04
+        print("\nUsing original assignments from dataset for comparison...")
         original_schedule = self.final_schedule.copy()
         
-        # Create simulated "before" by randomly assigning technicians
-        import random
-        random.seed(42)  # For reproducibility
+        # Verify that original_assigned_technician_id exists
+        if 'original_assigned_technician_id' not in original_schedule.columns:
+            print("⚠ Warning: original_assigned_technician_id not found in final_schedule.csv")
+            print("Using optimized assignments for both maps...")
         
-        available_techs = self.technicians['technician_id'].tolist()
-        original_schedule['simulated_original_tech'] = [
-            random.choice(available_techs) for _ in range(len(original_schedule))
-        ]
-        
-        # Create interactive filtered map for BEFORE
-        print("\nCreating interactive BEFORE map (filter by technician and day)...")
+        # Create interactive filtered map for BEFORE (Original Assignments)
+        print("\nCreating interactive BEFORE map (original assignments from dataset)...")
         self.create_interactive_filtered_map(
             original_schedule,
-            'simulated_original_tech',
-            'Before Optimization - Interactive Filter',
+            'original_assigned_technician_id',
+            'Before Optimization (Original Assignments)',
             "output/map_before_interactive.html"
         )
         
@@ -376,7 +372,7 @@ class RouteVisualizer:
         )
         
         # Calculate total distances
-        total_before_distance = self.calculate_total_distance(original_schedule, 'simulated_original_tech')
+        total_before_distance = self.calculate_total_distance(original_schedule, 'original_assigned_technician_id')
         total_after_distance = self.calculate_total_distance(original_schedule, 'optimized_assigned_technician_id')
         
         distance_saved = total_before_distance - total_after_distance
@@ -386,16 +382,24 @@ class RouteVisualizer:
         print("\n" + "="*80)
         print(f"ROUTE OPTIMIZATION SUMMARY")
         print("="*80)
-        print(f"Before (random assignment): {total_before_distance:.2f} km total travel")
-        print(f"After (route optimized): {total_after_distance:.2f} km total travel")
-        print(f"Distance saved: {distance_saved:.2f} km ({percent_saved:.1f}% reduction)")
+        print(f"Before (original assignments): {total_before_distance:.2f} km total travel")
+        print(f"After (optimized assignments): {total_after_distance:.2f} km total travel")
+        
+        if distance_saved > 0:
+            print(f"Distance saved: {distance_saved:.2f} km ({percent_saved:.1f}% reduction)")
+        elif distance_saved < 0:
+            print(f"Distance increased: {abs(distance_saved):.2f} km ({abs(percent_saved):.1f}% increase)")
+            print("Note: Optimization prioritized skill match and schedule preferences over pure distance")
+        else:
+            print(f"Distance unchanged: {total_after_distance:.2f} km")
         
         print("\n✓ Visualization complete!")
         print(f"\n📁 Generated interactive maps:")
-        print(f"   - output/map_before_interactive.html (filterable by technician & day)")
-        print(f"   - output/map_after_interactive.html (filterable by technician & day)")
-        print(f"\n💡 Open these files and use the layer control (top-right) to filter by technician and day!")
-        print(f"   Toggle different combinations to compare routes across different days and technicians.")
+        print(f"   - output/map_before_interactive.html (original assignments from dataset)")
+        print(f"   - output/map_after_interactive.html (optimized assignments)")
+        print(f"\n💡 Open these files and use the layer control (top-right) to filter by day!")
+        print(f"   Each map shows all technicians for each day - toggle days to compare.")
+        print(f"   Compare BEFORE (original) vs AFTER (optimized) to see the improvement!")
 
 def main():
     """Main execution."""
