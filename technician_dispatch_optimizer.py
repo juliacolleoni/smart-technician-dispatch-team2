@@ -204,21 +204,21 @@ class DynamicWeightManager:
             
             if job_type in ['installation', 'new service']:
                 # New installations need skilled techs
-                weights['skill'] += 0.10
-                weights['travel'] -= 0.05
-                weights['availability'] -= 0.05
+                weights['skill'] += 0.05
+                weights['travel'] -= 0.03
+                weights['availability'] -= 0.02
                 
             elif job_type in ['repair', 'troubleshoot', 'fix']:
                 # Repairs need prompt scheduling
-                weights['availability'] += 0.10
-                weights['travel'] -= 0.05
-                weights['skill'] -= 0.05
+                weights['availability'] += 0.05
+                weights['travel'] -= 0.02
+                weights['skill'] -= 0.03
                 
             elif job_type in ['upgrade', 'maintenance']:
                 # Routine maintenance prioritizes efficiency
-                weights['travel'] += 0.10
-                weights['skill'] -= 0.05
-                weights['availability'] -= 0.05
+                weights['travel'] += 0.05
+                weights['skill'] -= 0.03
+                weights['availability'] -= 0.02
         
         # 2. Adjust based on customer tier
         if 'customer_tier' in context:
@@ -226,9 +226,9 @@ class DynamicWeightManager:
             
             if tier in ['premium', 'gold', 'business']:
                 # Premium customers get priority scheduling
-                weights['availability'] += 0.15
-                weights['travel'] -= 0.10
-                weights['skill'] -= 0.05
+                weights['availability'] += 0.07
+                weights['travel'] -= 0.04
+                weights['skill'] -= 0.03
         
         # 3. Adjust based on time sensitivity
         if 'time_sensitivity' in context:
@@ -236,9 +236,19 @@ class DynamicWeightManager:
             
             if sensitivity == 'high':
                 # Urgent jobs prioritize scheduling
-                weights['availability'] += 0.10
-                weights['travel'] -= 0.10
+                weights['availability'] += 0.05
+                weights['travel'] -= 0.03
+                weights['skill'] -= 0.02
         
+        # 4. Add a safeguard for minimum travel weight
+        if weights['travel'] < 0.25:  # Never let travel go below 25%
+            deficit = 0.25 - weights['travel']
+            total_other = weights['skill'] + weights['availability'] 
+            
+            weights['skill'] -= deficit * (weights['skill'] / total_other)
+            weights['availability'] -= deficit * (weights['availability'] / total_other)
+            weights['travel'] = 0.25
+
         # Normalize weights to ensure they sum to 1.0
         total = sum(weights.values())
         if total > 0:
@@ -768,8 +778,30 @@ class TechnicianDispatchOptimizer:
                 
                 # Hybrid score: favor distance but consider skill and availability
                 # Weight: 50% distance, 30% skill, 20% availability
-                hybrid_score = 0.5 * distance_score + 0.3 * skill_score + 0.2 * avail_score
-                
+                # Get context for dynamic weighting
+                context = self.weight_manager.get_context_from_workorder(wo)
+
+                # Calculate weights but adjust to prioritize distance for first job
+                weights = self.weight_manager.calculate_weights(context)
+                # For first assignment, increase distance weight
+                territorial_weights = {
+                    'skill': weights['skill'] * 0.6,  # Reduce skill importance
+                    'availability': weights['availability'] * 0.4, # Reduce availability importance
+                    'travel': min(0.5, weights['travel'] * 1.5)  # Boost travel/distance importance
+                }
+
+                # Normalize weights to sum to 1.0
+                total = sum(territorial_weights.values())
+                for k in territorial_weights:
+                    territorial_weights[k] /= total
+
+                # Use dynamic weights with territorial adjustment
+                hybrid_score = (
+                    territorial_weights['travel'] * distance_score + 
+                    territorial_weights['skill'] * skill_score + 
+                    territorial_weights['availability'] * avail_score
+                )
+
                 if hybrid_score > best_score:
                     best_score = hybrid_score
                     best_job = wo
@@ -905,13 +937,19 @@ class TechnicianDispatchOptimizer:
                             distance = haversine_distance(tech_lat, tech_lon, job_lat, job_lon)
                             travel_score = max(0.0, 1.0 - (distance / 50.0))
                     
-                    # 4. Calculate COMBINED score using weights
+                    # 4. Get context for dynamic weighting
+                    context = self.weight_manager.get_context_from_workorder(wo)
+                            
+                    # 5. Calculate dynamic weights for this job
+                    weights = self.weight_manager.calculate_weights(context)
+
+                    # 6. Calculate COMBINED score using dynamic weights
                     combined_score = (
-                        SKILL_WEIGHT * skill_score +
-                        AVAILABILITY_WEIGHT * avail_score +
-                        TRAVEL_WEIGHT * travel_score
+                        weights['skill'] * skill_score +
+                        weights['availability'] * avail_score +
+                        weights['travel'] * travel_score
                     )
-                    
+
                     # Choose tech with BEST COMBINED SCORE
                     if combined_score > best_combined_score:
                         best_combined_score = combined_score
@@ -1051,7 +1089,7 @@ class TechnicianDispatchOptimizer:
         return self
     
     def _sequence_jobs_by_distance(self, jobs):
-        """Sequence jobs using nearest neighbor algorithm to minimize travel."""
+        """Sequence jobs using weighted scoring to minimize travel while respecting priorities."""
         if len(jobs) <= 1:
             return jobs
         
@@ -1063,34 +1101,57 @@ class TechnicianDispatchOptimizer:
         sequenced.append(current_job)
         current_location = current_job['workorder']['workorder_id']
         
-        # Greedily pick nearest job
+        # Get technician ID for weight context
+        tech_id = None
+        for assignment in self.assignments:
+            if assignment['workorder_id'] == current_job['workorder']['workorder_id']:
+                tech_id = assignment['optimized_assigned_technician_id']
+                break
+        
+        # Iteratively add jobs with weighted scoring
         while remaining:
-            nearest_job = None
-            nearest_distance = float('inf')
-            nearest_idx = -1
+            best_job = None
+            best_score = -float('inf')  # Use negative infinity as initial value
+            best_idx = -1
             
             for idx, job in enumerate(remaining):
                 next_location = job['workorder']['workorder_id']
                 distance = self.distance_calc.get_distance(current_location, next_location)
                 
-                if distance < nearest_distance:
-                    nearest_distance = distance
-                    nearest_job = job
-                    nearest_idx = idx
-            
-            if nearest_job:
-                # Calculate travel score for this job
-                travel_score = max(0.0, 1.0 - (nearest_distance / 50.0))
-                nearest_job['travel_score'] = travel_score
-                nearest_job['travel_distance'] = nearest_distance
+                # Convert to travel score (0-1 scale, higher is better)
+                distance_score = max(0.0, 1.0 - (distance / 50.0))
                 
-                sequenced.append(nearest_job)
-                current_location = nearest_job['workorder']['workorder_id']
-                remaining.pop(nearest_idx)
+                # Calculate job's dynamic weights
+                context = self.weight_manager.get_context_from_workorder(job['workorder'])
+                weights = self.weight_manager.calculate_weights(context)
+                
+                # For sequencing, we mainly care about travel weight vs. other factors
+                # Higher travel_weight means more sensitive to distance
+                sequence_score = weights['travel'] * distance_score + (1 - weights['travel']) * job['skill_score']
+                
+                # Choose job with best weighted score
+                if sequence_score > best_score:
+                    best_score = sequence_score
+                    best_job = job
+                    best_idx = idx
+            
+            if best_job:
+                # Record distance and travel score
+                next_location = best_job['workorder']['workorder_id']
+                distance = self.distance_calc.get_distance(current_location, next_location)
+                travel_score = max(0.0, 1.0 - (distance / 50.0))
+                
+                best_job['travel_score'] = travel_score
+                best_job['travel_distance'] = distance
+                
+                sequenced.append(best_job)
+                current_location = best_job['workorder']['workorder_id']
+                remaining.pop(best_idx)
             else:
                 break
         
         return sequenced
+
     
     def _reassign_overflow_jobs(self, unassigned_jobs, tech_assignments):
         """Try to reassign jobs that didn't fit in their original assignment."""
@@ -1112,6 +1173,9 @@ class TechnicianDispatchOptimizer:
             assigned = False
             
             # Strategy 1: Try ALL technicians on the same day with ANY available slot
+            best_tech = None
+            best_score = -1
+
             for _, tech in self.data.technicians.iterrows():
                 tech_id = tech['technician_id']
                 
@@ -1119,16 +1183,53 @@ class TechnicianDispatchOptimizer:
                 if not self.can_assign_job_to_tech(tech_id, orig_date):
                     continue
                 
+                # Calculate skill match
+                if 'required_skills_ground_truth' in wo and not pd.isna(wo['required_skills_ground_truth']):
+                    required_skills = self.skill_extractor.parse_ground_truth_skills(wo['required_skills_ground_truth'])
+                else:
+                    required_skills = self.skill_extractor.extract_skills(wo['job_description'])
+                
+                skill_score = self.skill_extractor.calculate_skill_match_score(
+                    required_skills, tech['skills']
+                )
+                
+                # Check availability
                 start_time, avail_score = self.availability_mgr.find_best_time_slot(
                     tech_id, orig_date, duration, None  # Ignore customer preference for overflow
                 )
                 
-                if start_time and (start_time + duration) <= shift_end:
-                    assigned = self._make_assignment(job_info, tech_id, orig_date, start_time, duration, avail_score, "Same day")
-                    break
+                # Skip if no availability
+                if not start_time or (start_time + duration) > shift_end:
+                    continue
+                
+                # Use dynamic weights to pick the best tech
+                context = self.weight_manager.get_context_from_workorder(wo)
+                weights = self.weight_manager.calculate_weights(context)
+                
+                # For overflow reassignment, prioritize fitting it in
+                composite_score = (
+                    weights['skill'] * skill_score +
+                    weights['availability'] * avail_score
+                )
+                
+                if composite_score > best_score:
+                    best_score = composite_score
+                    best_tech = tech_id
+                    best_start = start_time
+                    best_avail = avail_score
+
+            if best_tech:
+                assigned = self._make_assignment(job_info, best_tech, orig_date, best_start, duration, best_avail, "Same day")
+
             
             # Strategy 2: Try ALL days in the week, ALL technicians
             if not assigned:
+                best_tech = None
+                best_date = None
+                best_score = -1
+                best_start = None
+                best_avail = 0
+                
                 for target_date in all_dates:
                     for _, tech in self.data.technicians.iterrows():
                         tech_id = tech['technician_id']
@@ -1137,20 +1238,52 @@ class TechnicianDispatchOptimizer:
                         if not self.can_assign_job_to_tech(tech_id, target_date):
                             continue
                         
+                        # Calculate skill match
+                        skill_score = self.skill_extractor.calculate_skill_match_score(
+                            required_skills, tech['skills']
+                        )
+                        
+                        # Check availability
                         start_time, avail_score = self.availability_mgr.find_best_time_slot(
                             tech_id, target_date, duration, None
                         )
                         
-                        if start_time and (start_time + duration) <= shift_end:
-                            days_diff = abs((pd.to_datetime(target_date) - pd.to_datetime(orig_date)).days)
-                            assigned = self._make_assignment(job_info, tech_id, target_date, start_time, duration, avail_score, f"Moved to {target_date}")
-                            break
-                    
-                    if assigned:
-                        break
+                        # Skip if no availability
+                        if not start_time or (start_time + duration) > shift_end:
+                            continue
+                        
+                        # Use dynamic weights to pick the best tech/date combo
+                        context = self.weight_manager.get_context_from_workorder(wo)
+                        weights = self.weight_manager.calculate_weights(context)
+                        
+                        # For different date, penalize based on days difference
+                        days_diff = abs((pd.to_datetime(target_date) - pd.to_datetime(orig_date)).days)
+                        date_penalty = days_diff * 0.1  # 0.1 penalty per day of difference
+                        
+                        composite_score = (
+                            weights['skill'] * skill_score +
+                            weights['availability'] * avail_score - 
+                            date_penalty  # Penalize for date change
+                        )
+                        
+                        if composite_score > best_score:
+                            best_score = composite_score
+                            best_tech = tech_id
+                            best_date = target_date
+                            best_start = start_time
+                            best_avail = avail_score
+                
+                if best_tech:
+                    assigned = self._make_assignment(job_info, best_tech, best_date, best_start, duration, best_avail, f"Moved to {best_date}")
+
             
             # Strategy 3: Force fit into any gap (last resort) - allow +1 overflow in flexible mode
             if not assigned:
+                best_tech = None
+                best_date = None
+                best_score = -1
+                best_start = None
+                
                 for target_date in all_dates:
                     for _, tech in self.data.technicians.iterrows():
                         tech_id = tech['technician_id']
@@ -1159,8 +1292,67 @@ class TechnicianDispatchOptimizer:
                         if not self.can_assign_job_to_tech(tech_id, target_date, allow_overflow=True):
                             continue
                         
+                        # Calculate skill match
+                        skill_score = self.skill_extractor.calculate_skill_match_score(
+                            required_skills, tech['skills']
+                        )
+                        
+                        # Get dynamic weights
+                        context = self.weight_manager.get_context_from_workorder(wo)
+                        weights = self.weight_manager.calculate_weights(context)
+                        
+                        # For force-fit, prioritize skills slightly more
+                        force_weights = weights.copy()
+                        force_weights['skill'] = min(0.5, weights['skill'] * 1.2)
+                        
+                        # Normalize weights to sum to 1.0
+                        total = sum(force_weights.values())
+                        for key in force_weights:
+                            force_weights[key] /= total
+                        
+                        # Try slots in order of preference based on weights
+                        # More favorable times are those closer to preferred window
+                        preferred_slots = []
+                        
+                        # Get customer preference if any
+                        pref_window = wo.get('customer_preferred_window', '')
+                        pref_start, pref_end = 480, 1020  # Default 8am-5pm
+                        
+                        if pref_window and not pd.isna(pref_window) and '-' in str(pref_window):
+                            try:
+                                parts = str(pref_window).split('-')
+                                pref_start = time_to_minutes(parts[0].strip())
+                                pref_end = time_to_minutes(parts[1].strip())
+                            except:
+                                pass
+                        
                         # Try every 15-minute slot in the shift
                         for start_time in range(480, shift_end - duration + 1, 15):
+                            # Calculate preference score for this slot
+                            slot_end = start_time + duration
+                            
+                            # Score based on how close to preferred window
+                            if start_time >= pref_start and slot_end <= pref_end:
+                                pref_score = 1.0  # Perfect match
+                            else:
+                                # Score inversely to distance from preferred window
+                                before_distance = max(0, pref_start - start_time)
+                                after_distance = max(0, slot_end - pref_end)
+                                distance = max(before_distance, after_distance)
+                                pref_score = max(0.0, 1.0 - (distance / 240))  # Up to 4h off gets some score
+                            
+                            # Higher weighted score = try this slot earlier
+                            weighted_score = force_weights['availability'] * pref_score + force_weights['skill'] * skill_score
+                            
+                            preferred_slots.append((start_time, weighted_score))
+                        
+                        # Sort slots by weighted score (highest first)
+                        preferred_slots.sort(key=lambda x: -x[1])
+                        
+                        # Try slots in preferred order
+                        for start_time, slot_score in preferred_slots:
+                            end_time = start_time + duration
+                            
                             # Check if this exact slot is free
                             if hasattr(orig_date, 'date'):
                                 check_date = target_date
@@ -1173,7 +1365,6 @@ class TechnicianDispatchOptimizer:
                                 scheduled = self.availability_mgr.scheduled_times[tech_id][check_date]
                             
                             # Check overlap
-                            end_time = start_time + duration
                             is_free = True
                             for (sched_start, sched_end) in scheduled:
                                 if not (end_time <= sched_start or start_time >= sched_end):
@@ -1181,20 +1372,29 @@ class TechnicianDispatchOptimizer:
                                     break
                             
                             if is_free and end_time <= shift_end:
-                                assigned = self._make_assignment(job_info, tech_id, check_date, start_time, duration, 0.5, f"Force-fit {check_date}")
-                                break
+                                # This slot works - calculate final score
+                                days_diff = abs((pd.to_datetime(target_date) - pd.to_datetime(orig_date)).days)
+                                date_penalty = days_diff * 0.1
+                                
+                                composite_score = slot_score - date_penalty
+                                
+                                if composite_score > best_score:
+                                    best_score = composite_score
+                                    best_tech = tech_id
+                                    best_date = check_date
+                                    best_start = start_time
                         
-                        if assigned:
-                            break
-                    
-                    if assigned:
-                        break
+                        # Don't break early - keep checking all techs/dates to find best option
+                
+                if best_tech:
+                    assigned = self._make_assignment(job_info, best_tech, best_date, best_start, duration,0.5, f"Force-fit {best_date}")
+
             
             if not assigned:
                 print(f"    ✗ Could not reassign {wo['workorder_id']} - truly no capacity")
     
     def _make_assignment(self, job_info, tech_id, date, start_time, duration, avail_score, reason):
-        """Helper to create and record an assignment."""
+        """Helper to create and record an assignment using dynamic weights."""
         wo = job_info['workorder']
         end_time = start_time + duration
         
@@ -1210,11 +1410,43 @@ class TechnicianDispatchOptimizer:
             required_skills, tech_row['skills']
         )
         
-        travel_score = 0.5  # Neutral for reassigned
+        # For reassigned jobs, use a neutral travel score as baseline
+        travel_score = 0.5
+        
+        # Try to compute a real travel score if possible
+        # Get most recently scheduled job for this tech on this date
+        if tech_id in self.availability_mgr.scheduled_times and date in self.availability_mgr.scheduled_times[tech_id]:
+            scheduled = self.availability_mgr.scheduled_times[tech_id][date]
+            if scheduled:
+                # Find the workorder_id for the last job
+                for assignment in reversed(self.assignments):
+                    if (assignment['optimized_assigned_technician_id'] == tech_id and 
+                        assignment['optimized_scheduled_date'] == date):
+                        last_job_id = assignment['workorder_id']
+                        # Calculate actual travel score
+                        distance = self.distance_calc.get_distance(last_job_id, wo['workorder_id'])
+                        travel_score = max(0.0, 1.0 - (distance / 50.0))
+                        break
         
         # Get context and weights
         context = self.weight_manager.get_context_from_workorder(wo)
-        weights = self.weight_manager.calculate_weights(context)
+        
+        # For reassignments, adjust weights to prioritize fitting it in
+        reassign_context = context.copy()
+        if 'time_sensitivity' not in reassign_context:
+            reassign_context['time_sensitivity'] = 'high'  # Treat overflow jobs as high priority
+        
+        weights = self.weight_manager.calculate_weights(reassign_context)
+        
+        # For reassignments, we need to be more flexible
+        # Adjust weights slightly to favor availability
+        adjustment = 0.05
+        weights['availability'] = min(0.45, weights['availability'] + adjustment)
+        
+        # Ensure weights still sum to 1.0
+        total = sum(weights.values())
+        for key in weights:
+            weights[key] /= total
         
         # Calculate score with dynamic weights
         total_score = (
@@ -1249,7 +1481,6 @@ class TechnicianDispatchOptimizer:
         self.increment_job_count(tech_id, date)
         print(f"    ✓ {wo['workorder_id']} → {tech_id} on {date} ({reason})")
         return True
-
     
     def optimize_schedule(self):
         """Main optimization entry point."""
@@ -1332,11 +1563,26 @@ def main():
     optimizer.generate_output(output_file)
     
     # Calculate and display quality metrics
-    from metrics import QualityMetrics
-    metrics = QualityMetrics(optimizer)
+    try:
+        from metrics import QualityMetrics
+        metrics_calculator = QualityMetrics(optimizer)
+
+        metrics_calculator.print_quality_report(use_dynamic_weights=True)
+        metrics_calculator.compare_dynamic_vs_static_weights()
+        
+        # Optional: Export metrics to CSV for presentation
+        # metrics_calculator.export_metrics_to_csv("output/metrics_results.csv")
+        
+        # Optional: Generate HTML dashboard
+        # metrics_calculator.create_metrics_visualization("output/metrics_dashboard.html")
+        
+    except Exception as e:
+        print(f"\nCould not calculate metrics: {str(e)}")
+        import traceback
+        traceback.print_exc()
     
     # Print comparison report (original vs optimized)
-    metrics.print_comparison_report()
+    metrics_calculator.print_comparison_report()
     
     print("\n" + "="*80)
     print("OPTIMIZATION COMPLETE!")

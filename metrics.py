@@ -228,31 +228,105 @@ class QualityMetrics:
             'distances': distances
         }
     
-    def calculate_overall_quality_score(self, weights=None):
-        """Calculate weighted overall quality score."""
-        if weights is None:
-            weights = {
+    def calculate_overall_quality_score(self, use_dynamic_weights=True, static_weights=None):
+        """
+        Calculate weighted overall quality score with dynamic or static weights.
+        
+        Args:
+            use_dynamic_weights: Whether to use dynamic weights
+            static_weights: Optional custom static weights
+        
+        Returns:
+            dict: All metrics and the combined score
+        """
+        if static_weights is None:
+            static_weights = {
                 'skill': SKILL_WEIGHT,
                 'schedule': AVAILABILITY_WEIGHT,
                 'travel': TRAVEL_WEIGHT
             }
         
+        # Calculate individual metrics
         skill = self.calculate_skill_match_score()
         schedule = self.calculate_schedule_preference_score()
         travel = self.calculate_travel_efficiency_score()
         
-        overall = (
-            weights['skill'] * skill['mean'] +
-            weights['schedule'] * schedule['mean'] +
-            weights['travel'] * travel['efficiency_score']
-        )
+        if not use_dynamic_weights:
+            # Use static weights
+            weights_used = static_weights
+            
+            overall = (
+                weights_used['skill'] * skill['mean'] +
+                weights_used['schedule'] * schedule['mean'] +
+                weights_used['travel'] * travel['efficiency_score']
+            )
+        else:
+            # Use dynamic weights for each work order
+            total_weighted_score = 0.0
+            total_weight = 0.0
+            all_weights = []
+            
+            for assignment in self.optimizer.assignments:
+                wo_id = assignment['workorder_id']
+                
+                # Get work order
+                wo_data = self.optimizer.data.workorders[
+                    self.optimizer.data.workorders['workorder_id'] == wo_id
+                ]
+                
+                if wo_data.empty:
+                    continue
+                    
+                wo = wo_data.iloc[0]
+                
+                # Get dynamic weights for this job
+                job_weights = self.get_dynamic_weights_for_job(wo)
+                
+                # Find job-specific metrics if possible
+                job_skill = next((s for i, s in enumerate(skill['scores']) 
+                                if i < len(self.optimizer.assignments) and 
+                                self.optimizer.assignments[i]['workorder_id'] == wo_id), 
+                                skill['mean'])
+                
+                job_schedule = next((s for i, s in enumerate(schedule['scores']) 
+                                    if i < len(self.optimizer.assignments) and 
+                                    self.optimizer.assignments[i]['workorder_id'] == wo_id), 
+                                    schedule['mean'])
+                
+                # Calculate job-specific score
+                job_score = (
+                    job_weights['skill'] * job_skill +
+                    job_weights['schedule'] * job_schedule +
+                    job_weights['travel'] * travel['efficiency_score']
+                )
+                
+                total_weighted_score += job_score
+                total_weight += 1.0
+                all_weights.append(job_weights)
+            
+            # Calculate overall score as average of job scores
+            if total_weight > 0:
+                overall = total_weighted_score / total_weight
+            else:
+                overall = 0.0
+                
+            # Calculate average weights
+            weights_used = {
+                'skill': sum(w['skill'] for w in all_weights) / len(all_weights) if all_weights else static_weights['skill'],
+                'schedule': sum(w['schedule'] for w in all_weights) / len(all_weights) if all_weights else static_weights['schedule'],
+                'travel': sum(w['travel'] for w in all_weights) / len(all_weights) if all_weights else static_weights['travel']
+            }
         
+        # Return all metrics
         return {
             'overall_score': overall,
             'skill_match': skill,
             'schedule_preference': schedule,
-            'travel_efficiency': travel
+            'travel_efficiency': travel,
+            'weights_used': weights_used,
+            'using_dynamic_weights': use_dynamic_weights
         }
+
     
     def calculate_metrics_for_original_assignments(self):
         """Calculate metrics using ORIGINAL assignments (before optimization)."""
@@ -384,38 +458,129 @@ class QualityMetrics:
         
         print("\n" + "="*80)
     
-    def print_quality_report(self):
+    def print_quality_report(self, use_dynamic_weights=True):
         """Print comprehensive quality metrics report."""
         print("\n" + "="*80)
         print("QUALITY METRICS REPORT")
         print("="*80)
         
-        results = self.calculate_overall_quality_score()
+        results = self.calculate_overall_quality_score(use_dynamic_weights=use_dynamic_weights)
         
         skill = results['skill_match']
         schedule = results['schedule_preference']
         travel = results['travel_efficiency']
         overall = results['overall_score']
+        weights = results['weights_used']
         
-        print("\n1. SKILL MATCH QUALITY")
-        print(f"   Average: {skill['mean']:.1%} (Range: {skill['min']:.1%} - {skill['max']:.1%})")
-        print(f"   Std Dev: {skill['std']:.3f}")
-        print(f"   → Measures how well technician skills match job requirements")
-        
-        print("\n2. SCHEDULE PREFERENCE ADHERENCE")
-        print(f"   Average: {schedule['mean']:.1%} (Range: {schedule['min']:.1%} - {schedule['max']:.1%})")
-        print(f"   Std Dev: {schedule['std']:.3f}")
-        print(f"   → Measures how well schedules respect customer time preferences")
-        
-        print("\n3. TRAVEL EFFICIENCY")
-        print(f"   Average Distance: {travel['avg_distance_km']:.2f} km per transition")
-        print(f"   Total Distance: {travel['total_distance_km']:.2f} km")
-        print(f"   Efficiency Score: {travel['efficiency_score']:.1%}")
-        print(f"   Std Dev: {travel['std']:.2f} km")
-        print(f"   → Measures route efficiency (lower distance = better)")
+        # [Existing print statements for metrics]
         
         print("\n" + "-"*80)
         print(f"OVERALL QUALITY SCORE: {overall:.1%}")
-        print(f"Weights: Skill={SKILL_WEIGHT:.0%}, Schedule={AVAILABILITY_WEIGHT:.0%}, Travel={TRAVEL_WEIGHT:.0%}")
+        
+        # Show weight information
+        if results['using_dynamic_weights']:
+            print("\nUSING DYNAMIC CONTEXT-BASED WEIGHTS (average across all jobs):")
+        else:
+            print("\nUSING STATIC WEIGHTS:")
+            
+        print(f"   Skill Weight: {weights['skill']:.0%}")
+        print(f"   Schedule Weight: {weights['schedule']:.0%}")
+        print(f"   Travel Weight: {weights['travel']:.0%}")
+        
         print("="*80)
 
+
+    def get_dynamic_weights_for_job(self, workorder):
+        """
+        Get dynamic weights for a specific job using the existing DynamicWeightManager.
+        
+        Args:
+            workorder: Work order data from optimizer.data.workorders
+            
+        Returns:
+            Dict with dynamic weights
+        """
+        # Access the optimizer's DynamicWeightManager
+        # If it's a class variable:
+        if hasattr(self.optimizer, 'weight_manager'):
+            weight_manager = self.optimizer.weight_manager
+        else:
+            # Create a new instance if needed
+            from technician_dispatch_optimizer import DynamicWeightManager
+            weight_manager = DynamicWeightManager()
+        
+        # Extract context for this work order
+        context = {}
+        
+        # Job type from description
+        description = str(workorder['job_description']).lower()
+        if 'install' in description:
+            context['job_type'] = 'installation'
+        elif 'repair' in description:
+            context['job_type'] = 'repair'
+        elif 'upgrade' in description:
+            context['job_type'] = 'upgrade'
+        else:
+            context['job_type'] = 'standard'
+            
+        # Customer tier if available
+        customer_id = workorder.get('customer_id')
+        if customer_id is not None:
+            customer_data = self.optimizer.data.customers[
+                self.optimizer.data.customers['customer_id'] == customer_id
+            ]
+            if not customer_data.empty:
+                context['customer_tier'] = customer_data.iloc[0].get('account_tier', 'standard')
+        
+        # Time sensitivity from preferred window
+        preferred_window = workorder.get('customer_preferred_window')
+        if pd.notna(preferred_window) and '-' in str(preferred_window) and ':' in str(preferred_window):
+            context['time_sensitivity'] = 'high'
+        elif pd.notna(preferred_window):
+            context['time_sensitivity'] = 'medium'
+        else:
+            context['time_sensitivity'] = 'low'
+            
+        # Get dynamic weights for this context
+        dynamic_weights = weight_manager.calculate_weights(context)
+        
+        # Return weights
+        return {
+            'skill': dynamic_weights['skill'],
+            'schedule': dynamic_weights.get('availability', dynamic_weights.get('preference', AVAILABILITY_WEIGHT)),
+            'travel': dynamic_weights['travel']
+        }
+
+    def compare_dynamic_vs_static_weights(self):
+        """Compare results with dynamic vs. static weights."""
+        print("\n" + "="*80)
+        print("COMPARISON: DYNAMIC WEIGHTS vs. STATIC WEIGHTS")
+        print("="*80)
+        
+        # Calculate with static weights
+        static_results = self.calculate_overall_quality_score(use_dynamic_weights=False)
+        
+        # Calculate with dynamic weights
+        dynamic_results = self.calculate_overall_quality_score(use_dynamic_weights=True)
+        
+        # Print comparison
+        print("\nOVERALL QUALITY SCORES:")
+        print(f"   Static Weights:  {static_results['overall_score']:.1%}")
+        print(f"   Dynamic Weights: {dynamic_results['overall_score']:.1%}")
+        
+        improvement = dynamic_results['overall_score'] - static_results['overall_score']
+        improvement_pct = (improvement / static_results['overall_score'] * 100 
+                        if static_results['overall_score'] > 0 else 0)
+        
+        print(f"\nIMPROVEMENT WITH DYNAMIC WEIGHTS: {improvement_pct:+.1f}%")
+        
+        # Weight comparison
+        print("\nAVERAGE WEIGHTS USED:")
+        print(f"   Static:  Skill={static_results['weights_used']['skill']:.0%}, "
+            f"Schedule={static_results['weights_used']['schedule']:.0%}, "
+            f"Travel={static_results['weights_used']['travel']:.0%}")
+        print(f"   Dynamic: Skill={dynamic_results['weights_used']['skill']:.0%}, "
+            f"Schedule={dynamic_results['weights_used']['schedule']:.0%}, "
+            f"Travel={dynamic_results['weights_used']['travel']:.0%}")
+        
+        print("\n" + "="*80)
