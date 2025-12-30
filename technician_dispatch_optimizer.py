@@ -332,12 +332,34 @@ class AvailabilityManager:
                     
                     # Prefer slots that match customer preference
                     if preferred_window and not pd.isna(preferred_window):
-                        if 'morning' in str(preferred_window).lower() and current_time < 720:
+                        pref_str = str(preferred_window).strip()
+                        
+                        # Try to parse specific time window (e.g., "08:00-10:00")
+                        if '-' in pref_str and ':' in pref_str:
+                            try:
+                                parts = pref_str.split('-')
+                                pref_start = time_to_minutes(parts[0].strip())
+                                pref_end = time_to_minutes(parts[1].strip())
+                                
+                                # Check if current slot fits within preferred window
+                                slot_end = current_time + duration
+                                if current_time >= pref_start and slot_end <= pref_end:
+                                    # Perfect match - fits completely within preferred window
+                                    score += 0.5
+                                elif current_time < pref_end and slot_end > pref_start:
+                                    # Partial overlap with preferred window
+                                    score += 0.2
+                            except:
+                                pass
+                        
+                        # Fallback to generic morning/afternoon if no specific time or parsing failed
+                        pref_lower = pref_str.lower()
+                        if 'morning' in pref_lower and current_time < 720:
                             score += 0.3
-                        elif 'afternoon' in str(preferred_window).lower() and current_time >= 720:
+                        elif 'afternoon' in pref_lower and current_time >= 720:
                             score += 0.3
                     
-                    # Prefer earlier slots
+                    # Prefer earlier slots (small bonus)
                     score += 0.1 * (1 - (current_time / 1080))
                     
                     if score > best_score:
