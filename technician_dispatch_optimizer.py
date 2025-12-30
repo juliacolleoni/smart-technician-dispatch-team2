@@ -179,50 +179,21 @@ class DataLoader:
         """Load all datasets."""
         print("Loading datasets...")
         
-        self.technicians = pd.read_excel(f"{self.data_dir}/data/01_technician_profiles.xlsx")
-        self.customers = pd.read_excel(f"{self.data_dir}/data/02_customer_profiles.xlsx")
-        self.service_history = pd.read_excel(f"{self.data_dir}/data/03_customer_service_history.xlsx")
-        self.workorders = pd.read_excel(f"{self.data_dir}/data/04_workorders_week_original.xlsx")
-        self.calendar = pd.read_excel(f"{self.data_dir}/data/05_technician_calendar_original.xlsx")
-        
-        # Create locations dataframe from workorders + DEPOT
-        self.locations = self._create_locations_from_workorders()
+        self.technicians = pd.read_excel(f"{self.data_dir}/01_technician_profiles.xlsx")
+        self.customers = pd.read_excel(f"{self.data_dir}/02_customer_profiles.xlsx")
+        self.service_history = pd.read_excel(f"{self.data_dir}/03_customer_service_history.xlsx")
+        self.workorders = pd.read_excel(f"{self.data_dir}/04_workorders_week_original.xlsx")
+        self.calendar = pd.read_excel(f"{self.data_dir}/05_technician_calendar_original.xlsx")
+        self.locations = pd.read_excel(f"{self.data_dir}/06_locations_nodes.xlsx")
         
         print(f"✓ Loaded {len(self.technicians)} technicians")
         print(f"✓ Loaded {len(self.customers)} customers")
         print(f"✓ Loaded {len(self.service_history)} service history records")
         print(f"✓ Loaded {len(self.workorders)} work orders")
         print(f"✓ Loaded {len(self.calendar)} calendar entries")
-        print(f"✓ Created {len(self.locations)} location nodes from workorders")
+        print(f"✓ Loaded {len(self.locations)} location nodes")
         
         return self
-    
-    def _create_locations_from_workorders(self):
-        """Create locations dataframe from workorders and DEPOT."""
-        locations_list = []
-        
-        # Add DEPOT
-        locations_list.append({
-            'node_id': 'DEPOT',
-            'node_type': 'DEPOT',
-            'ref_id': None,
-            'lat': 51.0447,
-            'lon': -114.0719,
-            'label': 'TELUS Depot - Calgary (Mock)'
-        })
-        
-        # Add workorders
-        for _, wo in self.workorders.iterrows():
-            locations_list.append({
-                'node_id': wo['workorder_id'],
-                'node_type': 'WORKORDER',
-                'ref_id': wo['workorder_id'],
-                'lat': wo['job_lat'],
-                'lon': wo['job_lon'],
-                'label': f"{wo['neighborhood']} / {wo['job_description'][:30]}..."
-            })
-        
-        return pd.DataFrame(locations_list)
 
 # ============================================================================
 # DISTANCE CALCULATOR
@@ -748,7 +719,7 @@ class TechnicianDispatchOptimizer:
         unassigned_jobs = sorted(unassigned_jobs, key=lambda x: int(x['workorder']['job_duration_minutes']))
         
         # Get all dates in the schedule
-        all_dates = sorted(set([pd.to_datetime(d).date() for d in pd.read_excel(f"{self.data.data_dir}/data/04_workorders_week_original.xlsx")['scheduled_date'].unique()]))
+        all_dates = sorted(set([pd.to_datetime(d).date() for d in pd.read_excel(f"{self.data.data_dir}/04_workorders_week_original.xlsx")['scheduled_date'].unique()]))
         
         for job_info in unassigned_jobs:
             wo = job_info['workorder']
@@ -919,7 +890,7 @@ def main():
     print("="*80)
     
     # Data directory
-    data_dir = "/Users/juliacouto/Downloads/01 - Smart Technician Dispatch"
+    data_dir = "data"
     
     # Load data
     loader = DataLoader(data_dir)
@@ -930,7 +901,7 @@ def main():
     optimizer.optimize_schedule()
     
     # Generate output
-    output_file = f"{data_dir}/output/final_schedule.csv"
+    output_file = "output/final_schedule.csv"
     optimizer.generate_output(output_file)
     
     print("\n" + "="*80)

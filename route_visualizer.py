@@ -26,11 +26,12 @@ class RouteVisualizer:
         """Load necessary datasets."""
         print("Loading data for visualization...")
         
-        self.work_orders = pd.read_excel(f"{self.data_dir}/data/04_workorders_week_original.xlsx")
-        self.technicians = pd.read_excel(f"{self.data_dir}/data/01_technician_profiles.xlsx")
+        self.work_orders = pd.read_excel(f"{self.data_dir}/04_workorders_week_original.xlsx")
+        self.locations = pd.read_excel(f"{self.data_dir}/06_locations_nodes.xlsx")
+        self.technicians = pd.read_excel(f"{self.data_dir}/01_technician_profiles.xlsx")
         
         try:
-            self.final_schedule = pd.read_csv(f"{self.data_dir}/output/final_schedule.csv")
+            self.final_schedule = pd.read_csv("output/final_schedule.csv")
         except:
             print("⚠ final_schedule.csv not found. Run optimizer first.")
             self.final_schedule = None
@@ -334,7 +335,7 @@ class RouteVisualizer:
             original_schedule,
             'simulated_original_tech',
             'Before Optimization - Interactive Filter',
-            f"{self.data_dir}/output/map_before_interactive.html"
+            "output/map_before_interactive.html"
         )
         
         # Create interactive filtered map for AFTER
@@ -343,7 +344,7 @@ class RouteVisualizer:
             original_schedule,
             'optimized_assigned_technician_id',
             'After Optimization - Interactive Filter',
-            f"{self.data_dir}/output/map_after_interactive.html"
+            "output/map_after_interactive.html"
         )
         
         # Calculate total distances
@@ -370,7 +371,7 @@ class RouteVisualizer:
 
 def main():
     """Main execution."""
-    data_dir = "/Users/juliacouto/Downloads/01 - Smart Technician Dispatch"
+    data_dir = "data"
     
     visualizer = RouteVisualizer(data_dir)
     visualizer.create_comparison_report()
