@@ -490,19 +490,153 @@ class TechnicianDispatchOptimizer:
         
         return total_score, scores
     
+    def _territorial_first_assignment(self, workorders_df, date):
+        """
+        Assign first job to each technician for a given date, maximizing spatial distribution.
+        Returns: dict of {tech_id: first_job}, list of remaining workorders
+        """
+        available_techs = []
+        for _, tech in self.data.technicians.iterrows():
+            tech_id = tech['technician_id']
+            # Check if tech can work this day
+            if self.can_assign_job_to_tech(tech_id, date):
+                available_techs.append(tech_id)
+        
+        if not available_techs:
+            return {}, workorders_df.to_dict('records')
+        
+        first_assignments = {}
+        remaining_jobs = []
+        assigned_job_ids = set()
+        
+        # Get jobs for this date
+        date_jobs = workorders_df[workorders_df['scheduled_date'] == date].to_dict('records')
+        
+        if not date_jobs:
+            return {}, []
+        
+        print(f"  Territorial assignment for {date}: {len(available_techs)} techs, {len(date_jobs)} jobs")
+        
+        # Assign first job to each technician, maximizing distance between them
+        for tech_idx, tech_id in enumerate(available_techs):
+            if not date_jobs:
+                break
+            
+            best_job = None
+            best_score = -1
+            best_job_idx = -1
+            
+            for job_idx, wo in enumerate(date_jobs):
+                if wo['workorder_id'] in assigned_job_ids:
+                    continue
+                
+                # Check basic constraints
+                start_time, avail_score = self.availability_mgr.find_best_time_slot(
+                    tech_id, date, int(wo['job_duration_minutes']),
+                    wo.get('customer_preferred_window')
+                )
+                
+                if start_time is None or avail_score <= 0:
+                    continue
+                
+                # Calculate skill score
+                if 'required_skills_ground_truth' in wo and not pd.isna(wo['required_skills_ground_truth']):
+                    required_skills = self.skill_extractor.parse_ground_truth_skills(wo['required_skills_ground_truth'])
+                else:
+                    required_skills = self.skill_extractor.extract_skills(wo['job_description'])
+                
+                tech = self.data.technicians[self.data.technicians['technician_id'] == tech_id].iloc[0]
+                skill_score = self.skill_extractor.calculate_skill_match_score(required_skills, tech['skills'])
+                
+                # Minimum skill threshold for territorial assignment
+                if skill_score < 0.3:
+                    continue
+                
+                # Calculate distance score: maximize distance from already assigned first jobs
+                distance_score = 0.0
+                if first_assignments:
+                    min_distance_to_assigned = float('inf')
+                    for assigned_tech, assigned_job_info in first_assignments.items():
+                        dist = self.distance_calc.get_distance(
+                            assigned_job_info['workorder']['workorder_id'],
+                            wo['workorder_id']
+                        )
+                        min_distance_to_assigned = min(min_distance_to_assigned, dist)
+                    
+                    # Higher score for jobs farther from already assigned jobs
+                    distance_score = min(1.0, min_distance_to_assigned / 30.0)  # 30km = max score
+                else:
+                    # First technician: pick any job with good skill
+                    distance_score = 0.5
+                
+                # Hybrid score: favor distance but consider skill and availability
+                # Weight: 50% distance, 30% skill, 20% availability
+                hybrid_score = 0.5 * distance_score + 0.3 * skill_score + 0.2 * avail_score
+                
+                if hybrid_score > best_score:
+                    best_score = hybrid_score
+                    best_job = wo
+                    best_job_idx = job_idx
+            
+            if best_job:
+                first_assignments[tech_id] = {
+                    'workorder': best_job,
+                    'orig_tech': best_job.get('original_assigned_technician_id'),
+                    'orig_start': best_job.get('scheduled_start_time'),
+                    'orig_end': best_job.get('scheduled_end_time'),
+                    'skill_score': skill_score
+                }
+                assigned_job_ids.add(best_job['workorder_id'])
+                print(f"    {tech_id} → {best_job['workorder_id']} (territorial first job, score: {best_score:.2f})")
+        
+        # Remaining jobs
+        for wo in date_jobs:
+            if wo['workorder_id'] not in assigned_job_ids:
+                remaining_jobs.append(wo)
+        
+        return first_assignments, remaining_jobs
+    
     def optimize_schedule_by_day_and_route(self):
         """Optimize schedule with proper route sequencing per technician per day."""
         print("\n" + "="*80)
-        print("STARTING TWO-PHASE OPTIMIZATION")
+        print("STARTING THREE-PHASE OPTIMIZATION")
         print("="*80)
         
         workorders = self.data.workorders.copy()
         
-        # PHASE 1: Assign technicians based on COMBINED SCORE (skill + availability + travel)
-        print("\nPhase 1: Initial technician assignment using combined score...")
+        # Get unique dates
+        unique_dates = sorted(workorders['scheduled_date'].unique())
+        
+        # PHASE 0: Territorial first assignment - maximize spatial distribution
+        print("\nPhase 0: Territorial first assignment (spatial distribution)...")
         tech_assignments = {}  # {date: {tech_id: [workorders]}}
+        processed_job_ids = set()
+        
+        for date in unique_dates:
+            first_jobs, remaining = self._territorial_first_assignment(workorders, date)
+            
+            if first_jobs:
+                if date not in tech_assignments:
+                    tech_assignments[date] = {}
+                
+                for tech_id, job_info in first_jobs.items():
+                    if tech_id not in tech_assignments[date]:
+                        tech_assignments[date][tech_id] = []
+                    tech_assignments[date][tech_id].append(job_info)
+                    processed_job_ids.add(job_info['workorder']['workorder_id'])
+                    
+                    # Reserve capacity
+                    if CONSTRAINT_MODE == 'strict':
+                        self.increment_job_count(tech_id, date)
+        
+        # PHASE 1: Assign remaining jobs using COMBINED SCORE (skill + availability + travel)
+        print("\nPhase 1: Remaining jobs assignment using combined score...")
         
         for idx, wo in workorders.iterrows():
+            # Skip if already assigned in territorial phase
+            if wo['workorder_id'] in processed_job_ids:
+                continue
+            
             orig_tech = wo.get('original_assigned_technician_id', None)
             orig_date = wo['scheduled_date']
             orig_start = wo.get('scheduled_start_time', None)
