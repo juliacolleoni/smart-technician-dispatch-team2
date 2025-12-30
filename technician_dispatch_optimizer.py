@@ -160,6 +160,155 @@ class SkillExtractor:
         return match_ratio
 
 # ============================================================================
+# DYNAMIC WEIGHT MANAGER
+# ============================================================================
+
+class DynamicWeightManager:
+    """
+    Manages weights for optimization criteria based on job context.
+    Automatically adjusts weights for skill matching, schedule preference, 
+    and travel efficiency.
+    """
+    
+    def __init__(self):
+        """Initialize with default base weights."""
+        # Use the same weights defined in global configuration
+        self.base_weights = {
+            'skill': SKILL_WEIGHT,
+            'availability': AVAILABILITY_WEIGHT,
+            'travel': TRAVEL_WEIGHT
+        }
+    
+    def calculate_weights(self, context: Dict) -> Dict[str, float]:
+        """
+        Calculate customized weights based on job context.
+        
+        Args:
+            context: Dictionary containing relevant factors:
+                - job_type: Type of job (installation, repair, etc.)
+                - customer_tier: Importance tier (standard, premium, etc.)
+                - time_sensitivity: How urgent (low, medium, high)
+        
+        Returns:
+            Dict of adjusted weights that sum to 1.0
+        """
+        # Start with base weights
+        weights = self.base_weights.copy()
+        
+        # 1. Adjust based on job type
+        if 'job_type' in context:
+            job_type = context['job_type'].lower()
+            
+            if job_type in ['installation', 'new service']:
+                # New installations need skilled techs
+                weights['skill'] += 0.10
+                weights['travel'] -= 0.05
+                weights['availability'] -= 0.05
+                
+            elif job_type in ['repair', 'troubleshoot', 'fix']:
+                # Repairs need prompt scheduling
+                weights['availability'] += 0.10
+                weights['travel'] -= 0.05
+                weights['skill'] -= 0.05
+                
+            elif job_type in ['upgrade', 'maintenance']:
+                # Routine maintenance prioritizes efficiency
+                weights['travel'] += 0.10
+                weights['skill'] -= 0.05
+                weights['availability'] -= 0.05
+        
+        # 2. Adjust based on customer tier
+        if 'customer_tier' in context:
+            tier = context['customer_tier'].lower()
+            
+            if tier in ['premium', 'gold', 'business']:
+                # Premium customers get priority scheduling
+                weights['availability'] += 0.15
+                weights['travel'] -= 0.10
+                weights['skill'] -= 0.05
+        
+        # 3. Adjust based on time sensitivity
+        if 'time_sensitivity' in context:
+            sensitivity = context['time_sensitivity']
+            
+            if sensitivity == 'high':
+                # Urgent jobs prioritize scheduling
+                weights['availability'] += 0.10
+                weights['travel'] -= 0.10
+        
+        # Normalize weights to ensure they sum to 1.0
+        total = sum(weights.values())
+        if total > 0:
+            for key in weights:
+                weights[key] /= total
+        
+        return weights
+    
+    def get_context_from_workorder(self, workorder: pd.Series, 
+                                   technician_history: pd.DataFrame = None) -> Dict:
+        """
+        Extract context factors from work order data.
+        
+        Args:
+            workorder: Work order data series
+            technician_history: Optional service history data
+            
+        Returns:
+            Dict with context factors
+        """
+        context = {}
+        
+        # 1. Determine job type from description
+        if 'job_description' in workorder and not pd.isna(workorder['job_description']):
+            description = str(workorder['job_description']).lower()
+            
+            if any(term in description for term in ['install', 'setup', 'new']):
+                context['job_type'] = 'installation'
+            elif any(term in description for term in ['repair', 'fix', 'broken']):
+                context['job_type'] = 'repair'
+            elif any(term in description for term in ['upgrade', 'enhance']):
+                context['job_type'] = 'upgrade'
+            elif any(term in description for term in ['troubleshoot', 'diagnose']):
+                context['job_type'] = 'troubleshoot'
+            else:
+                context['job_type'] = 'standard'
+        
+        # 2. Determine customer tier if available
+        if 'customer_type' in workorder and not pd.isna(workorder['customer_type']):
+            customer_type = str(workorder['customer_type']).lower()
+            if 'business' in customer_type:
+                context['customer_tier'] = 'business'
+            elif 'premium' in customer_type:
+                context['customer_tier'] = 'premium'
+            else:
+                context['customer_tier'] = 'standard'
+        
+        # 3. Determine time sensitivity from preferred window
+        if 'customer_preferred_window' in workorder and not pd.isna(workorder['customer_preferred_window']):
+            # If customer specified a preference, treat as medium sensitivity
+            context['time_sensitivity'] = 'medium'
+            
+            # If window is narrow (specific hours), treat as high sensitivity
+            pref_window = str(workorder['customer_preferred_window'])
+            if '-' in pref_window and ':' in pref_window:
+                try:
+                    parts = pref_window.split('-')
+                    start_time = time_to_minutes(parts[0].strip())
+                    end_time = time_to_minutes(parts[1].strip())
+                    
+                    # If window is less than 4 hours, it's high sensitivity
+                    if end_time - start_time <= 240:
+                        context['time_sensitivity'] = 'high'
+                except:
+                    pass
+        else:
+            # No preference specified - low sensitivity
+            context['time_sensitivity'] = 'low'
+        
+        return context
+
+
+# ============================================================================
 # DATA LOADER
 # ============================================================================
 
@@ -399,9 +548,10 @@ class TechnicianDispatchOptimizer:
             data_loader.technicians, 
             data_loader.calendar
         )
+        self.weight_manager = DynamicWeightManager()  # Add this line
         self.assignments = []
         self.jobs_per_tech_per_day = {}  # Track: {tech_id: {date: job_count}}
-    
+   
     def can_assign_job_to_tech(self, tech_id: str, date, allow_overflow: bool = False) -> bool:
         """Check if technician can take another job on this day (respects max_jobs_per_day).
         
@@ -446,10 +596,12 @@ class TechnicianDispatchOptimizer:
         self.jobs_per_tech_per_day[tech_id][date] += 1
     
     def calculate_composite_score(self, workorder: pd.Series, tech_id: str,
-                                  date, start_time: int, 
-                                  prev_job_location: str = None) -> Tuple[float, Dict]:
+                              date, start_time: int, 
+                              prev_job_location: str = None) -> Tuple[float, Dict]:
         """
         Calculate composite score for assigning a work order to a technician.
+        Uses dynamic weights based on job context.
+        
         Returns (total_score, score_breakdown).
         """
         # Normalize date
@@ -503,14 +655,35 @@ class TechnicianDispatchOptimizer:
         
         scores['travel'] = travel_score
         
-        # Calculate weighted composite score
+        # 4. DETERMINE JOB CONTEXT FOR DYNAMIC WEIGHTING
+        # Merge customer data with workorder if needed
+        if 'customer_id' in workorder and 'customer_type' not in workorder:
+            customer_data = self.data.customers[
+                self.data.customers['customer_id'] == workorder['customer_id']
+            ]
+            if not customer_data.empty:
+                for col in ['customer_type', 'account_tier']:
+                    if col in customer_data.columns:
+                        workorder[col] = customer_data.iloc[0][col]
+        
+        # Get context for dynamic weighting
+        context = self.weight_manager.get_context_from_workorder(workorder, history)
+        
+        # 5. CALCULATE DYNAMIC WEIGHTS
+        weights = self.weight_manager.calculate_weights(context)
+        
+        # 6. CALCULATE WEIGHTED COMPOSITE SCORE
         total_score = (
-            SKILL_WEIGHT * scores['skill'] +
-            AVAILABILITY_WEIGHT * scores['availability'] +
-            TRAVEL_WEIGHT * scores['travel']
+            weights['skill'] * scores['skill'] +
+            weights['availability'] * scores['availability'] +
+            weights['travel'] * scores['travel']
         )
         
+        # Include weights in the scores dict for reporting
+        scores['weights'] = weights
+        
         return total_score, scores
+
     
     def _territorial_first_assignment(self, workorders_df, date):
         """
@@ -823,14 +996,25 @@ class TechnicianDispatchOptimizer:
                     
                     # Calculate final scores
                     travel_score = job_info.get('travel_score', 0.5)
+                    
+                    # Get context and weights
+                    context = self.weight_manager.get_context_from_workorder(wo)
+                    weights = self.weight_manager.calculate_weights(context)
+                                        
+                    # Calculate score with dynamic weights
                     total_score = (
-                        SKILL_WEIGHT * job_info['skill_score'] +
-                        AVAILABILITY_WEIGHT * min(1.0, avail_score) +
-                        TRAVEL_WEIGHT * travel_score
+                        weights['skill'] * job_info['skill_score'] +
+                        weights['availability'] * min(1.0, avail_score) +
+                        weights['travel'] * travel_score
                     )
-                    
-                    rationale = f"Skill:{job_info['skill_score']:.2f} Avail:{min(1.0, avail_score):.2f} Travel:{travel_score:.2f} | Total:{total_score:.2f}"
-                    
+
+                    # Enhanced rationale with weight information
+                    rationale = (
+                        f"Skill:{job_info['skill_score']:.2f}×{weights['skill']:.2f} "
+                        f"Avail:{min(1.0, avail_score):.2f}×{weights['availability']:.2f} "
+                        f"Travel:{travel_score:.2f}×{weights['travel']:.2f} | "
+                        f"Total:{total_score:.2f}"
+                    )
                     assignment = {
                         'workorder_id': wo['workorder_id'],
                         'original_assigned_technician_id': job_info['orig_tech'],
@@ -1025,13 +1209,25 @@ class TechnicianDispatchOptimizer:
         )
         
         travel_score = 0.5  # Neutral for reassigned
+        
+        # Get context and weights
+        context = self.weight_manager.get_context_from_workorder(wo)
+        weights = self.weight_manager.calculate_weights(context)
+        
+        # Calculate score with dynamic weights
         total_score = (
-            SKILL_WEIGHT * skill_score +
-            AVAILABILITY_WEIGHT * min(1.0, avail_score) +
-            TRAVEL_WEIGHT * travel_score
+            weights['skill'] * skill_score +
+            weights['availability'] * min(1.0, avail_score) +
+            weights['travel'] * travel_score
         )
         
-        rationale = f"Skill:{skill_score:.2f} Avail:{min(1.0, avail_score):.2f} Travel:{travel_score:.2f} | Total:{total_score:.2f} ({reason})"
+        # Enhanced rationale with weight information
+        rationale = (
+            f"Skill:{skill_score:.2f}×{weights['skill']:.2f} "
+            f"Avail:{min(1.0, avail_score):.2f}×{weights['availability']:.2f} "
+            f"Travel:{travel_score:.2f}×{weights['travel']:.2f} | "
+            f"Total:{total_score:.2f} ({reason})"
+        )
         
         assignment = {
             'workorder_id': wo['workorder_id'],
@@ -1051,6 +1247,7 @@ class TechnicianDispatchOptimizer:
         self.increment_job_count(tech_id, date)
         print(f"    ✓ {wo['workorder_id']} → {tech_id} on {date} ({reason})")
         return True
+
     
     def optimize_schedule(self):
         """Main optimization entry point."""
@@ -1074,6 +1271,37 @@ class TechnicianDispatchOptimizer:
         if len(df) > 0:
             print(f"Technician changes: {(df['original_assigned_technician_id'] != df['optimized_assigned_technician_id']).sum()}")
             print(f"Time changes: {(df['original_start_time'] != df['optimized_start_time']).sum()}")
+            
+            # Extract weight information from rationale field
+            print("\nDynamic Weight Statistics:")
+            try:
+                # Extract average weights from rationale field
+                skill_weights = []
+                avail_weights = []
+                travel_weights = []
+                
+                for rationale in df['rationale']:
+                    if 'Skill:' in rationale and '×' in rationale:
+                        # Parse weight from format like "Skill:0.75×0.40"
+                        skill_part = rationale.split('Skill:')[1].split(' ')[0]
+                        avail_part = rationale.split('Avail:')[1].split(' ')[0]
+                        travel_part = rationale.split('Travel:')[1].split(' ')[0]
+                        
+                        # Extract weight values (after the × symbol)
+                        skill_weight = float(skill_part.split('×')[1])
+                        avail_weight = float(avail_part.split('×')[1])
+                        travel_weight = float(travel_part.split('×')[1])
+                        
+                        skill_weights.append(skill_weight)
+                        avail_weights.append(avail_weight)
+                        travel_weights.append(travel_weight)
+                
+                if skill_weights:
+                    print(f"  Average Skill Weight: {sum(skill_weights)/len(skill_weights):.2f}")
+                    print(f"  Average Availability Weight: {sum(avail_weights)/len(avail_weights):.2f}")
+                    print(f"  Average Travel Weight: {sum(travel_weights)/len(travel_weights):.2f}")
+            except Exception as e:
+                print(f"  Could not parse weight statistics: {str(e)}")
 
 # ============================================================================
 # MAIN EXECUTION
