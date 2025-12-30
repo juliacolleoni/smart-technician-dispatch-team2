@@ -498,8 +498,8 @@ class TechnicianDispatchOptimizer:
         
         workorders = self.data.workorders.copy()
         
-        # PHASE 1: Assign technicians based on skills and availability
-        print("\nPhase 1: Initial technician assignment...")
+        # PHASE 1: Assign technicians based on COMBINED SCORE (skill + availability + travel)
+        print("\nPhase 1: Initial technician assignment using combined score...")
         tech_assignments = {}  # {date: {tech_id: [workorders]}}
         
         for idx, wo in workorders.iterrows():
@@ -508,8 +508,9 @@ class TechnicianDispatchOptimizer:
             orig_start = wo.get('scheduled_start_time', None)
             orig_end = wo.get('scheduled_end_time', None)
             
-            # Find best technician based on skills
+            # Find best technician based on COMBINED SCORE (skill + availability + travel)
             best_tech = None
+            best_combined_score = -1
             best_skill_score = -1
             
             for _, tech in self.data.technicians.iterrows():
@@ -523,7 +524,7 @@ class TechnicianDispatchOptimizer:
                 
                 # Check if technician has capacity for another job this day
                 if start_time is not None and avail_score > 0 and self.can_assign_job_to_tech(tech_id, orig_date):
-                    # Calculate skill score only
+                    # 1. Calculate skill score
                     # Use ground truth skills if available
                     if 'required_skills_ground_truth' in wo and not pd.isna(wo['required_skills_ground_truth']):
                         required_skills = self.skill_extractor.parse_ground_truth_skills(wo['required_skills_ground_truth'])
@@ -542,7 +543,47 @@ class TechnicianDispatchOptimizer:
                     if not history.empty and history.iloc[0]['satisfaction_score_1to5'] >= 4:
                         skill_score = min(1.0, skill_score + 0.2)
                     
-                    if skill_score > best_skill_score:
+                    # 2. Availability score (already calculated above)
+                    
+                    # 3. Calculate travel score
+                    # If tech already has jobs assigned for this date, use distance to nearest job
+                    # Otherwise, use distance from tech's home base
+                    travel_score = 0.5  # Default neutral score
+                    
+                    if orig_date in tech_assignments and tech_id in tech_assignments[orig_date]:
+                        # Tech already has jobs this day - calculate distance to nearest existing job
+                        min_distance = float('inf')
+                        for existing_job in tech_assignments[orig_date][tech_id]:
+                            distance = self.distance_calc.get_distance(
+                                existing_job['workorder']['workorder_id'],
+                                wo['workorder_id']
+                            )
+                            min_distance = min(min_distance, distance)
+                        travel_score = max(0.0, 1.0 - (min_distance / 50.0))
+                    else:
+                        # First job for this tech on this day - use distance from home base
+                        tech_info = self.data.technicians[self.data.technicians['technician_id'] == tech_id].iloc[0]
+                        tech_lat = tech_info['home_base_lat']
+                        tech_lon = tech_info['home_base_lon']
+                        
+                        # Get job location
+                        wo_data = self.data.workorders[self.data.workorders['workorder_id'] == wo['workorder_id']]
+                        if not wo_data.empty:
+                            job_lat = wo_data.iloc[0]['job_lat']
+                            job_lon = wo_data.iloc[0]['job_lon']
+                            distance = haversine_distance(tech_lat, tech_lon, job_lat, job_lon)
+                            travel_score = max(0.0, 1.0 - (distance / 50.0))
+                    
+                    # 4. Calculate COMBINED score using weights
+                    combined_score = (
+                        SKILL_WEIGHT * skill_score +
+                        AVAILABILITY_WEIGHT * avail_score +
+                        TRAVEL_WEIGHT * travel_score
+                    )
+                    
+                    # Choose tech with BEST COMBINED SCORE
+                    if combined_score > best_combined_score:
+                        best_combined_score = combined_score
                         best_skill_score = skill_score
                         best_tech = tech_id
             
