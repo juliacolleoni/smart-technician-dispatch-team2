@@ -204,6 +204,12 @@ class RouteVisualizer:
             how='left'
         )
         
+        # Normalize date format - convert to date only (remove time component)
+        # Handle mixed formats (some with timestamps, some without)
+        schedule_with_coords['optimized_scheduled_date'] = pd.to_datetime(
+            schedule_with_coords['optimized_scheduled_date'], format='mixed', errors='coerce'
+        ).dt.date
+        
         # Get center point
         avg_lat = schedule_with_coords['job_lat'].mean()
         avg_lon = schedule_with_coords['job_lon'].mean()
@@ -215,9 +221,23 @@ class RouteVisualizer:
         all_dates = sorted(schedule_with_coords['optimized_scheduled_date'].unique())
         all_techs = sorted(schedule_with_coords[tech_id_column].unique())
         
+        # Create consistent color mapping for all technicians
+        tech_colors = {
+            'T-01': '#FF6B6B',  # Red
+            'T-02': '#4ECDC4',  # Turquoise
+            'T-03': '#45B7D1',  # Light Blue
+            'T-04': '#FFA07A',  # Light Salmon
+            'T-05': '#98D8C8',  # Mint
+            'T-06': '#F7DC6F',  # Yellow
+            'T-07': '#BB8FCE',  # Purple
+            'T-08': '#85C1E2',  # Sky Blue
+            'T-09': '#52B788',  # Green
+            'T-10': '#F8B739',  # Orange
+        }
+        
         # Create feature groups organized by day (so all techs for a day can be toggled together)
         for date in all_dates:
-            date_str = str(date).split()[0]
+            date_str = str(date)
             day_name = pd.to_datetime(date).strftime('%A')
             
             # Create a parent feature group for this day
@@ -249,17 +269,13 @@ class RouteVisualizer:
                 # Sort jobs by time
                 tech_day_data = tech_day_data.sort_values('optimized_start_time')
                 
-                # Calculate color for this route
-                tech_index = all_techs.index(tech_id)
-                colors = ['red', 'green', 'purple', 'orange', 'darkred', 'lightred', 
-                         'beige', 'darkblue', 'darkgreen', 'cadetblue', 'darkpurple', 
-                         'pink', 'lightblue', 'lightgreen', 'gray', 'black']
-                route_color = colors[tech_index % len(colors)]
+                # Get consistent color for this technician
+                route_color = tech_colors.get(tech_id, '#808080')  # Gray as fallback
                 
                 # Add job markers and route
                 route_coords = [(tech_lat, tech_lon)]
                 
-                for idx, job in tech_day_data.iterrows():
+                for visit_num, (idx, job) in enumerate(tech_day_data.iterrows(), start=1):
                     job_lat = job['job_lat']
                     job_lon = job['job_lon']
                     route_coords.append((job_lat, job_lon))
@@ -267,21 +283,33 @@ class RouteVisualizer:
                     popup_text = f"""
                     <b>Job: {job['workorder_id']}</b><br>
                     Tech: {job[tech_id_column]}<br>
+                    Visit #{visit_num}<br>
                     Time: {job['optimized_start_time']} - {job['optimized_end_time']}<br>
                     Duration: {job['job_duration_minutes']} min<br>
                     Type: {job['job_type']}<br>
                     Location: {job['neighborhood']}
                     """
                     
-                    folium.CircleMarker(
+                    # Create numbered marker
+                    folium.Marker(
                         [job_lat, job_lon],
-                        radius=8,
                         popup=folium.Popup(popup_text, max_width=300),
-                        color=route_color,
-                        fill=True,
-                        fillColor=route_color,
-                        fillOpacity=0.7,
-                        tooltip=f"{job['workorder_id']} - {job['optimized_start_time']}"
+                        icon=folium.DivIcon(html=f'''
+                            <div style="
+                                font-size: 12px;
+                                font-weight: bold;
+                                color: white;
+                                text-align: center;
+                                line-height: 24px;
+                                width: 24px;
+                                height: 24px;
+                                border-radius: 50%;
+                                background-color: {route_color};
+                                border: 2px solid white;
+                                box-shadow: 0 0 4px rgba(0,0,0,0.5);
+                            ">{visit_num}</div>
+                        '''),
+                        tooltip=f"#{visit_num}: {job['workorder_id']} - {job['optimized_start_time']}"
                     ).add_to(day_group)
                 
                 # Add route back to home
