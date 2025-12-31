@@ -45,7 +45,6 @@ flowchart TB
         CSV[final_schedule.csv<br/>191 Assignments]
         MAP1[map_before_interactive.html<br/>Baseline Visualization]
         MAP2[map_after_interactive.html<br/>Optimized Visualization]
-        SCHED[technician_schedules_detailed.xlsx<br/>Individual Schedules]
     end
 
     subgraph METRICS["📈 QUALITY METRICS"]
@@ -147,7 +146,6 @@ Dynamic weights adapt based on:
 ### 5️⃣ Output Generation
 - **CSV Schedule**: 191 optimized assignments with rationale
 - **Interactive Maps**: Folium-based visualization with tech/day filtering
-- **Individual Schedules**: Per-technician Excel workbook with calendar integration
 - **Quality Reports**: Comprehensive metrics and comparison analysis
 
 ## Data Flow Sequence
