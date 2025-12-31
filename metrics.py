@@ -420,6 +420,14 @@ class QualityMetrics:
         km_saved = orig_total_km - opt_total_km
         km_saved_percent = (km_saved / orig_total_km * 100) if orig_total_km > 0 else 0
         
+        # Calculate reassignments
+        total_wo = len(self.optimizer.assignments)
+        reassigned_count = sum(
+            1 for assignment in self.optimizer.assignments
+            if assignment['original_assigned_technician_id'] != assignment['optimized_assigned_technician_id']
+        )
+        reassignment_percent = (reassigned_count / total_wo * 100) if total_wo > 0 else 0
+        
         # Print table header
         print("\n                              ORIGINAL    OPTIMIZED    IMPROVEMENT")
         print("-" * 80)
@@ -455,6 +463,11 @@ class QualityMetrics:
         print(f"  Original Total:    {orig_total_km:8.2f} km")
         print(f"  Optimized Total:   {opt_total_km:8.2f} km")
         print(f"  Distance Saved:    {km_saved:8.2f} km ({km_saved_percent:+.1f}%)  {arrow}")
+        
+        print("\nREASSIGNMENT SUMMARY:")
+        print(f"  Total Work Orders: {total_wo:8d}")
+        print(f"  Reassigned:        {reassigned_count:8d} ({reassignment_percent:.1f}%)")
+        print(f"  Unchanged:         {total_wo - reassigned_count:8d} ({100 - reassignment_percent:.1f}%)")
         
         print("\n" + "="*80)
     
