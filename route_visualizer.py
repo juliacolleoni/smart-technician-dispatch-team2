@@ -112,7 +112,8 @@ class RouteVisualizer:
                 color=color,
                 weight=3,
                 opacity=0.7,
-                popup=f"Technician: {tech_id}"
+                popup=f"Technician: {tech_id} - {len(locations)} jobs",
+                tooltip=folium.Tooltip(f"{tech_id} - {len(locations)} visits", permanent=False, sticky=True)
             ).add_to(m)
             
             # Add markers for each job
@@ -121,6 +122,7 @@ class RouteVisualizer:
                     location=[loc['lat'], loc['lon']],
                     radius=8,
                     popup=f"<b>{tech_id}</b><br>{loc['workorder_id']}<br>Time: {loc['time']}<br>Stop #{j+1}",
+                    tooltip=folium.Tooltip(f"#{j+1}: {loc['workorder_id']} - {loc['time']}", permanent=False, sticky=True),
                     color=color,
                     fill=True,
                     fillColor=color,
@@ -131,6 +133,7 @@ class RouteVisualizer:
             folium.Marker(
                 location=[locations[0]['lat'], locations[0]['lon']],
                 popup=f"<b>{tech_id} - Start</b><br>{locations[0]['workorder_id']}",
+                tooltip=folium.Tooltip(f"{tech_id} - Start", permanent=False, sticky=True),
                 icon=folium.Icon(color='green', icon='play', prefix='fa')
             ).add_to(m)
         
@@ -203,6 +206,50 @@ class RouteVisualizer:
             how='left'
         )
         
+        # Parse rationale to extract scores
+        def parse_rationale(rationale_str):
+            """Extract skill, availability, and travel scores from rationale string."""
+            if pd.isna(rationale_str):
+                return None, None, None, None, None, None, None
+            
+            try:
+                # Format: "Skill:0.50×0.38 Avail:1.00×0.33 Travel:0.50×0.29 | Total:0.67"
+                parts = str(rationale_str).split(' ')
+                
+                skill_score = None
+                skill_weight = None
+                avail_score = None
+                avail_weight = None
+                travel_score = None
+                travel_weight = None
+                total_score = None
+                
+                for part in parts:
+                    if part.startswith('Skill:'):
+                        values = part.split(':')[1].split('×')
+                        skill_score = float(values[0])
+                        skill_weight = float(values[1])
+                    elif part.startswith('Avail:'):
+                        values = part.split(':')[1].split('×')
+                        avail_score = float(values[0])
+                        avail_weight = float(values[1])
+                    elif part.startswith('Travel:'):
+                        values = part.split(':')[1].split('×')
+                        travel_score = float(values[0])
+                        travel_weight = float(values[1])
+                    elif part.startswith('Total:'):
+                        total_score = float(part.split(':')[1])
+                
+                return skill_score, skill_weight, avail_score, avail_weight, travel_score, travel_weight, total_score
+            except:
+                return None, None, None, None, None, None, None
+        
+        # Add score columns
+        schedule_with_coords[['skill_score', 'skill_weight', 'avail_score', 'avail_weight', 
+                              'travel_score', 'travel_weight', 'total_score']] = schedule_with_coords['rationale'].apply(
+            lambda x: pd.Series(parse_rationale(x))
+        )
+        
         # Normalize date format - convert to date only (remove time component)
         # Handle mixed formats (some with timestamps, some without)
         schedule_with_coords['optimized_scheduled_date'] = pd.to_datetime(
@@ -240,7 +287,7 @@ class RouteVisualizer:
             day_name = pd.to_datetime(date).strftime('%A')
             
             # Create a parent feature group for this day
-            day_group = folium.FeatureGroup(name=f'📅 {day_name} ({date_str}) - All Techs', show=False)
+            day_group = folium.FeatureGroup(name=f'{day_name} ({date_str}) - All Techs', show=False)
             
             for tech_id in all_techs:
                 # Filter data for this tech and day
@@ -262,7 +309,7 @@ class RouteVisualizer:
                     [tech_lat, tech_lon],
                     popup=f"<b>{tech_id} Home</b>",
                     icon=folium.Icon(color='blue', icon='home', prefix='fa'),
-                    tooltip=f"{tech_id} Home"
+                    tooltip=folium.Tooltip(f"{tech_id} - Home Base", permanent=False, sticky=True)
                 ).add_to(day_group)
                 
                 # Sort jobs by time
@@ -279,6 +326,90 @@ class RouteVisualizer:
                     job_lon = job['job_lon']
                     route_coords.append((job_lat, job_lon))
                     
+                    # Preparar informações dos scores
+                    skill_score = job.get('skill_score', 0)
+                    skill_weight = job.get('skill_weight', 0)
+                    avail_score = job.get('avail_score', 0)
+                    avail_weight = job.get('avail_weight', 0)
+                    travel_score = job.get('travel_score', 0)
+                    travel_weight = job.get('travel_weight', 0)
+                    total_score = job.get('total_score', 0)
+                    
+                    # Função para criar barra de progresso visual
+                    def get_progress_bar(score, color):
+                        if pd.isna(score):
+                            return ""
+                        percentage = score * 100
+                        return f'''
+                        <div style="
+                            background-color: #e0e0e0;
+                            border-radius: 10px;
+                            height: 10px;
+                            width: 100%;
+                            overflow: hidden;
+                            margin-top: 2px;
+                        ">
+                            <div style="
+                                background-color: {color};
+                                height: 100%;
+                                width: {percentage}%;
+                                border-radius: 10px;
+                            "></div>
+                        </div>
+                        '''
+                    
+                    # Criar seção de scores para o tooltip
+                    scores_html = ""
+                    if not pd.isna(skill_score):
+                        scores_html = f'''
+                        <div style="
+                            margin-top: 10px;
+                            padding-top: 10px;
+                            border-top: 2px solid #e0e0e0;
+                        ">
+                            <div style="font-weight: bold; margin-bottom: 8px; color: #333;">
+                                Scores de Otimização
+                            </div>
+                            
+                            <div style="margin-bottom: 6px;">
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span><strong>Skills:</strong></span>
+                                    <span>{skill_score:.2f} × {skill_weight:.2f}</span>
+                                </div>
+                                {get_progress_bar(skill_score, '#4CAF50')}
+                            </div>
+                            
+                            <div style="margin-bottom: 6px;">
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span><strong>Schedule:</strong></span>
+                                    <span>{avail_score:.2f} × {avail_weight:.2f}</span>
+                                </div>
+                                {get_progress_bar(avail_score, '#2196F3')}
+                            </div>
+                            
+                            <div style="margin-bottom: 6px;">
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span><strong>Distância:</strong></span>
+                                    <span>{travel_score:.2f} × {travel_weight:.2f}</span>
+                                </div>
+                                {get_progress_bar(travel_score, '#FF9800')}
+                            </div>
+                            
+                            <div style="
+                                margin-top: 8px;
+                                padding-top: 6px;
+                                border-top: 1px solid #e0e0e0;
+                                font-weight: bold;
+                                color: {route_color};
+                            ">
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span>Total Score:</span>
+                                    <span>{total_score:.2f}</span>
+                                </div>
+                            </div>
+                        </div>
+                        '''
+                    
                     popup_text = f"""
                     <b>Job: {job['workorder_id']}</b><br>
                     Tech: {job[tech_id_column]}<br>
@@ -287,12 +418,48 @@ class RouteVisualizer:
                     Duration: {job['job_duration_minutes']} min<br>
                     Type: {job['job_type']}<br>
                     Location: {job['neighborhood']}
+                    {scores_html}
                     """
+                    
+                    # Create tooltip with score information
+                    tooltip_html = f"""
+                    <div style="font-family: Arial, sans-serif; font-size: 11px; min-width: 200px;">
+                        <div style="font-weight: bold; margin-bottom: 5px; font-size: 12px;">
+                            #{visit_num}: {job['workorder_id']}
+                        </div>
+                        <div style="margin-bottom: 3px;">
+                            ⏰ {job['optimized_start_time']} - {job['optimized_end_time']}
+                        </div>
+                        <div style="margin-bottom: 3px;">
+                            📍 {job['neighborhood']} | {job['job_type']}
+                        </div>
+                    """
+                    
+                    # Add scores if available
+                    if not pd.isna(skill_score):
+                        tooltip_html += f"""
+                        <div style="border-top: 1px solid #ccc; margin-top: 5px; padding-top: 5px;">
+                            <div style="margin-bottom: 2px;">
+                                🎯 Skill: {skill_score:.2f} × {skill_weight:.2f}
+                            </div>
+                            <div style="margin-bottom: 2px;">
+                                📅 Schedule: {avail_score:.2f} × {avail_weight:.2f}
+                            </div>
+                            <div style="margin-bottom: 2px;">
+                                🚗 Distance: {travel_score:.2f} × {travel_weight:.2f}
+                            </div>
+                            <div style="font-weight: bold; color: {route_color}; margin-top: 3px;">
+                                ⭐ Total: {total_score:.2f}
+                            </div>
+                        </div>
+                        """
+                    
+                    tooltip_html += "</div>"
                     
                     # Create numbered marker
                     folium.Marker(
                         [job_lat, job_lon],
-                        popup=folium.Popup(popup_text, max_width=300),
+                        popup=folium.Popup(popup_text, max_width=350),
                         icon=folium.DivIcon(html=f'''
                             <div style="
                                 font-size: 12px;
@@ -308,7 +475,7 @@ class RouteVisualizer:
                                 box-shadow: 0 0 4px rgba(0,0,0,0.5);
                             ">{visit_num}</div>
                         '''),
-                        tooltip=f"#{visit_num}: {job['workorder_id']} - {job['optimized_start_time']}"
+                        tooltip=folium.Tooltip(tooltip_html, permanent=False, sticky=True)
                     ).add_to(day_group)
                 
                 # Add route back to home
@@ -320,7 +487,8 @@ class RouteVisualizer:
                     color=route_color,
                     weight=2,
                     opacity=0.6,
-                    popup=f"{tech_id} route"
+                    popup=f"{tech_id} route - {len(tech_day_data)} jobs",
+                    tooltip=folium.Tooltip(f"{tech_id} - {len(tech_day_data)} visits", permanent=False, sticky=True)
                 ).add_to(day_group)
             
             # Add the day group to the map
@@ -393,10 +561,10 @@ class RouteVisualizer:
             print(f"Distance unchanged: {total_after_distance:.2f} km")
         
         print("\n✓ Visualization complete!")
-        print(f"\n📁 Generated interactive maps:")
+        print(f"\nGenerated interactive maps:")
         print(f"   - output/map_before_interactive.html (original assignments from dataset)")
         print(f"   - output/map_after_interactive.html (optimized assignments)")
-        print(f"\n💡 Open these files and use the layer control (top-right) to filter by day!")
+        print(f"\nOpen these files and use the layer control (top-right) to filter by day!")
         print(f"   Each map shows all technicians for each day - toggle days to compare.")
         print(f"   Compare BEFORE (original) vs AFTER (optimized) to see the improvement!")
 
