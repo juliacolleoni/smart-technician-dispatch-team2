@@ -178,15 +178,15 @@ class QualityMetrics:
                 
                 # Home to first job
                 first_job_id = assignments_sorted[0]['workorder_id']
-                first_job_loc = self.optimizer.data.locations[
-                    self.optimizer.data.locations['node_id'] == first_job_id
+                first_job_loc = self.optimizer.data.workorders[
+                    self.optimizer.data.workorders['workorder_id'] == first_job_id
                 ]
                 
                 if not first_job_loc.empty:
                     first_job_loc = first_job_loc.iloc[0]
                     dist = haversine_distance(
                         tech['home_base_lat'], tech['home_base_lon'],
-                        first_job_loc['lat'], first_job_loc['lon']
+                        first_job_loc['job_lat'], first_job_loc['job_lon']
                     )
                     distances.append(dist)
                 
@@ -200,14 +200,14 @@ class QualityMetrics:
                 
                 # Last job to home
                 last_job_id = assignments_sorted[-1]['workorder_id']
-                last_job_loc = self.optimizer.data.locations[
-                    self.optimizer.data.locations['node_id'] == last_job_id
+                last_job_loc = self.optimizer.data.workorders[
+                    self.optimizer.data.workorders['workorder_id'] == last_job_id
                 ]
                 
                 if not last_job_loc.empty:
                     last_job_loc = last_job_loc.iloc[0]
                     dist = haversine_distance(
-                        last_job_loc['lat'], last_job_loc['lon'],
+                        last_job_loc['job_lat'], last_job_loc['job_lon'],
                         tech['home_base_lat'], tech['home_base_lon']
                     )
                     distances.append(dist)
